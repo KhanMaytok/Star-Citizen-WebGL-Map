@@ -2,17 +2,16 @@
   * @author Lianna Eeftinck / https://github.com/Leeft
   **/
 
-import { Color } from './scmap/three';
 import StarSystem from './scmap/star-system';
 import Faction from './scmap/faction';
 import Goods from './scmap/goods';
 import { humanSort } from './helpers/functions';
 
 const MAPREVISION = 5;
-const LYtoAU = 63241.077; // Not used atm, but keeping around for convenience
 
 class SCMAP {
-  constructor () {
+  constructor (config) {
+    this.config = config;
     this.data = {
       systems: {},
       systemsById: {},
@@ -34,7 +33,8 @@ class SCMAP {
     // First build basic objects to make them all known
     // (this will also initialise any jumppoints it can)
     for ( let systemName in json ) {
-      const system = StarSystem.fromJSON( json[ systemName ] );
+      // Pass scmapInstance (this) and config to fromJSON
+      const system = StarSystem.fromJSON( json[ systemName ], this, this.config );
       this.data.systems[ system.name ]     = system;
       this.data.systemsById[ system.id ]   = system;
       this.data.systemsById[ system.uuid ] = system;
@@ -42,8 +42,11 @@ class SCMAP {
     }
 
     // Now go through the built objects again, fixing any leftover jumppoint data
+    // _fixJumpPoints now needs scmapInstance and config
     systems.forEach( system => {
-      system._fixJumpPoints( true );
+      if (system && system._fixJumpPoints) { // Ensure system and method exist
+        system._fixJumpPoints( system.jumpPoints, true, this, this.config );
+      }
     });
 
     // And provide them in a "human friendly" sort order
@@ -80,7 +83,7 @@ class SCMAP {
       const faction = new Faction({
         id: data.id,
         name: data.name,
-        color: new Color( data.color ),
+        color: data.color, // Store as string, let rendering layer handle Three.Color
         isRealFaction: data.isActualFaction,
         parentFaction: data.parentFaction,
       });
@@ -135,4 +138,4 @@ class SCMAP {
   }
 }
 
-export default new SCMAP();
+export default SCMAP;

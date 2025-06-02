@@ -1,5 +1,3 @@
-import config from '../scmap/config';
-
 function hasLocalStorage() {
   try {
     return 'localStorage' in window && window.localStorage !== null;
@@ -38,8 +36,8 @@ function humanSort( a, b ) {
   return 0;
 }
 
-function travelTimeForAU( distanceAU ) {
-  return ( config.approximateTraveltimePerAU * distanceAU );
+function travelTimeForAU( distanceAU, approximateTraveltimePerAU ) {
+  return ( approximateTraveltimePerAU * distanceAU );
 }
 
 export { hasLocalStorage, hasSessionStorage, humanSort, travelTimeForAU };

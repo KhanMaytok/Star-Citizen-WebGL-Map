@@ -2,15 +2,15 @@
 * @author Lianna Eeftinck / https://github.com/Leeft
 */
 
-import SCMAP from '../scmap';
+// import SCMAP from '../scmap'; // Removed: Appears unused and avoids potential circular dependency
 import StarSystem from './star-system';
-import { Color } from './three';
+// import { Color } from './three'; // Removed: Decoupling from Three.js global
 
 const DEFAULTS = {
   id: undefined,
   name: 'Unclaimed',
   isRealFaction: false,
-  color: new Color( 0xFFFFFF ),
+  color: '#FFFFFF', // Stored as string
   parentFaction: null,
 };
 
@@ -24,13 +24,13 @@ class Faction {
     };
   }
 
-  get planeColor () {
-    return this.color.clone().offsetHSL( 0, 0.5, 0 ).multiplyScalar( 0.20 );
-  }
+  // get planeColor () { // Removed: Dependent on THREE.Color
+  //   return this.color.clone().offsetHSL( 0, 0.5, 0 ).multiplyScalar( 0.20 );
+  // }
 
-  get lineColor () {
-    return this.color.clone().offsetHSL( 0, 0.05, -0.05 );
-  }
+  // get lineColor () { // Removed: Dependent on THREE.Color
+  //   return this.color.clone().offsetHSL( 0, 0.05, -0.05 );
+  // }
 
 
   claim ( system ) {

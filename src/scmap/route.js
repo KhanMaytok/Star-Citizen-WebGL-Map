@@ -2,28 +2,32 @@
   * @author Lianna Eeftinck / https://github.com/Leeft
   */
 
-import SCMAP from './../scmap';
+// import SCMAP from './../scmap'; // Will use scmapInstance passed in constructor
 import StarSystem from './star-system';
 import Dijkstra from './dijkstra';
 import { hasSessionStorage } from '../helpers/functions';
-import { scene, map } from '../starcitizen-webgl-map';
-import JumpRouteGeometry from './map/geometry/jump-route-geometry';
-import RouteUI from './ui/route';
+// import { scene, map } from '../starcitizen-webgl-map'; // UI/Three.js concerns
+// import JumpRouteGeometry from './map/geometry/jump-route-geometry'; // UI/Three.js concerns
+// import RouteUI from './ui/route'; // UI concerns
 
 class Route {
-  constructor ( start, waypoints ) {
-    this.start = ( start instanceof StarSystem ) ? start : null;
-    this.waypoints = [];
-    this._graphs = [];
-    this._routeObject = undefined;
-    this._error = undefined;
+  constructor ( startSystem, waypointsArray, scmapInstance, routingSettings, mapConfig ) {
+    this.scmapInstance = scmapInstance;
+    this.routingSettings = routingSettings;
+    this.mapConfig = mapConfig;
 
-    if ( waypoints instanceof StarSystem ) {
-      waypoints = [ waypoints ];
+    this.start = ( startSystem instanceof StarSystem ) ? startSystem : null;
+    this.waypoints = []; // Array of StarSystem instances
+    this._graphs = []; // Array of Dijkstra instances, each representing a segment
+    // this._routeObject = undefined; // Removed - UI concern
+    this._error = undefined; // Stores any error from graph building
+
+    if ( waypointsArray instanceof StarSystem ) {
+      waypointsArray = [ waypointsArray ];
     }
 
-    if ( Array.isArray( waypoints ) ) {
-      waypoints.forEach( waypoint => {
+    if ( Array.isArray( waypointsArray ) ) {
+      waypointsArray.forEach( waypoint => {
         if ( waypoint instanceof StarSystem ) {
           this.waypoints.push( waypoint );
         }
@@ -91,7 +95,11 @@ class Route {
     {
       if ( this._graphs[i] === graph ) {
         // insert new graph at wp, starting at wp, ending at oldEnd
-        this._graphs.splice( i + 1, 0, new Dijkstra( SCMAP.allSystems, waypoint, oldEnd ) );
+        if (!this.scmapInstance) {
+            console.error("Cannot split graph: scmapInstance is not available.");
+            return false;
+        }
+        this._graphs.splice( i + 1, 0, new Dijkstra( this.scmapInstance.allSystems, waypoint, oldEnd, this.routingSettings, this.scmapInstance, this.mapConfig ) );
 
         for ( let j = 0; j < this.waypoints.length; j += 1 ) {
           if ( this.waypoints[j] === oldEnd ) {
@@ -107,6 +115,7 @@ class Route {
     }
 
     console.error( `Couldn't match graph to split` );
+    return false;
   }
 
   toString () {
@@ -118,7 +127,7 @@ class Route {
 
     this.waypoints.forEach( system => {
       if ( system instanceof StarSystem ) {
-        result.push( system );
+        result.push( system.toString() );
       }
     });
 
@@ -129,34 +138,30 @@ class Route {
     const graphs = this.__findGraphs( toRemove );
 
     if ( graphs.length !== 2 ) {
-      console.error( `Can't remove waypoint '${ toRemove.name }', it is not a waypoint` );
+      // console.error( `Can't remove waypoint '${ toRemove.name }', it is not a waypoint or is a terminal point.` );
       return false;
     }
 
     const [ graphOne, graphTwo ] = graphs;
 
-    graphOne.end = graphTwo.start;
+    // The end of the first graph should now connect to the end of the second graph
+    graphOne.end = graphTwo.destination; // graphTwo.end is a system, not a graph node.
 
-    // And now delete graphTwo
-    this._graphs.forEach( ( graph, graphIndex ) => {
-      if ( graph === graphTwo ) {
-        console.log( `Removing`, graphTwo, `at index ${ graphIndex }` );
-        // remove the graph
-        this._graphs.splice( graphIndex, 1 );
+    // Remove graphTwo from _graphs array
+    const indexToRemove = this._graphs.indexOf(graphTwo);
+    if (indexToRemove > -1) {
+        this._graphs.splice(indexToRemove, 1);
+    }
 
-        this.waypoints.forEach( ( waypoint, waypointIndex ) => {
-          if ( toRemove === waypoint ) {
-            console.log( `Removing`, waypoint, `at index ${ waypointIndex }` );
-            // remove the waypoint
-            this.waypoints.splice( waypointIndex, 1 );
-          }
-        });
+    // Remove the waypoint from this.waypoints array
+    const waypointIndexToRemove = this.waypoints.indexOf(toRemove);
+    if (waypointIndexToRemove > -1) {
+        this.waypoints.splice(waypointIndexToRemove, 1);
+    }
 
-        this.__syncGraphs();
-        this.storeToSession();
-        return true;
-      }
-    });
+    this.__syncGraphs(); // Re-sync to rebuild graphOne with its new end
+    this.storeToSession();
+    return true;
   }
 
   moveWaypoint ( waypoint, destination ) {
@@ -165,19 +170,19 @@ class Route {
     }
 
     if ( destination === this.start || this.waypoints.indexOf( destination ) >= 0 ) {
+      // console.warn("Cannot move waypoint to start or an existing waypoint in the route.");
       return false;
     }
 
     // Easy case, moving start: update start and sync
     if ( waypoint === this.start ) {
-      if ( this.waypoints.length !== 1 || destination !== this.waypoints[0] ) {
-        this.start = destination;
-        this.__syncGraphs();
-        this.storeToSession();
-        return true;
-      } else {
+      if ( this.waypoints.length === 1 && destination === this.waypoints[0] ) { // Prevent moving start to be the same as the only waypoint
         return false;
       }
+      this.start = destination;
+      this.__syncGraphs();
+      this.storeToSession();
+      return true;
     }
 
     // Slightly more difficult, moving any waypoint: update waypoint and sync
@@ -188,90 +193,95 @@ class Route {
       this.storeToSession();
       return true;
     }
-
-    // Advanced case: split graphs at waypoint, then update waypoint and sync
-    if ( this.splitAt( waypoint ) ) {
-      index = this.waypoints.indexOf( waypoint );
-      if ( index > -1 ) {
-        this.waypoints[ index ] = destination;
-        this.__syncGraphs();
-        this.storeToSession();
-        return true;
-      }
+    
+    // If waypoint is not the start and not in waypoints, it might be a system within a segment.
+    // This case requires splitting the graph at 'waypoint', then effectively replacing 'waypoint' with 'destination'.
+    if (this.splitAt(waypoint)) { // This action adds 'waypoint' to this.waypoints
+        index = this.waypoints.indexOf(waypoint); // Find the newly added waypoint
+        if (index > -1) {
+            this.waypoints[index] = destination; // Replace it with the actual destination
+            this.__syncGraphs();
+            this.storeToSession();
+            return true;
+        }
     }
 
-    //console.error( `Couldn't find waypoint '${ waypoint.name }'` );
+    // console.error( `Couldn't find waypoint '${ waypoint.name }' to move or failed to split graph.` );
     return false;
   }
 
-  setRoute () {
-    const args = Array.prototype.slice.call( arguments );
-
-    this.start = args.shift();
-    this.start = ( this.start instanceof StarSystem ) ? this.start : null;
-    this.waypoints = [];
-
-    if ( this.start ) {
-      args.forEach( system => {
-        if ( system instanceof StarSystem ) {
-          this.waypoints.push( system );
-        }
-      });
-
-      this.waypoints = this.waypoints.filter( system => {
-        return ( system instanceof StarSystem );
-      });
+  setRoute ( ...systems ) {
+    if (systems.length === 0) {
+        this.start = null;
+        this.waypoints = [];
+    } else {
+        const newStart = systems.shift();
+        this.start = (newStart instanceof StarSystem) ? newStart : null;
+        this.waypoints = systems.filter(s => s instanceof StarSystem);
     }
 
+    this.__syncGraphs();
     this.storeToSession();
   }
 
   // Updates the graphs to match the current waypoints, and recalculates
   // the graphs where needed
   __syncGraphs () {
-    const newGraphs = [];
+    if (!this.scmapInstance) {
+      this._error = new Error("SCMAP instance not available for graph synchronization.");
+      console.error(this._error.message);
+      this._graphs = []; // Clear graphs if scmapInstance is missing
+      return;
+    }
+    if (!this.scmapInstance.allSystems || this.scmapInstance.allSystems.length === 0) {
+        this._error = new Error("No systems loaded in SCMAP instance for graph synchronization.");
+        // console.warn(this._error.message); // Potentially noisy if called before systems are loaded
+        this._graphs = [];
+        return;
+    }
 
-    this._graphs = newGraphs;
+
+    const newGraphs = [];
     this._error = undefined;
 
     try {
-
-      for ( let i = 0, waypointsLength = this.waypoints.length; i < waypointsLength; i += 1 )
-      {
-        const start = ( i === 0 ) ? this.start : this.waypoints[i - 1];
-        const end   = this.waypoints[i];
-        let graph;
-
-        if ( this._graphs[i] instanceof Dijkstra ) {
-          graph = this._graphs[i];
-          this._graphs[i].start = start;
-          this._graphs[i].end   = end;
-        } else {
-          graph = new Dijkstra( SCMAP.allSystems, start, end );
+      // Determine the sequence of stops: start system followed by all waypoints.
+      const allStops = [];
+      if (this.start instanceof StarSystem) {
+        allStops.push(this.start);
+      }
+      this.waypoints.forEach(wp => {
+        if (wp instanceof StarSystem) {
+          allStops.push(wp);
         }
+      });
 
-        graph.buildGraph( 'time', true );
-        newGraphs.push( graph );
-
-        if ( graph.routeArray().length <= 1 ) {
-          console.warn( `No route from ${ start.name } to ${ end.name } possible` );
-          throw new RouteSegmentFailed( `No route from ${ start.name } to ${ end.name } available` );
-          // TODO: could retry with fewer restrictions to indicate the user can change things
-          // to make the route possible, and indicate so in the error message
-        }
-
+      if (allStops.length < 2) { // Need at least two systems to form a segment
+        this._graphs = [];
+        return;
       }
 
+      for ( let i = 0; i < allStops.length - 1; i += 1 ) {
+        const segmentStart = allStops[i];
+        const segmentEnd   = allStops[i+1];
+
+        const graph = new Dijkstra( this.scmapInstance.allSystems, segmentStart, segmentEnd, this.routingSettings, this.scmapInstance, this.mapConfig );
+        graph.buildGraph( 'time', true ); // forceUpdate = true
+        newGraphs.push( graph );
+
+        // Check if the route segment is valid (more than just the start system)
+        const routeArray = graph.routeArray(); // Get the calculated path for this segment
+        if ( !routeArray || (routeArray.length <= 1 && segmentStart !== segmentEnd) ) {
+          console.warn( `No route from ${ segmentStart.name } to ${ segmentEnd.name } possible` );
+          throw new RouteSegmentFailed( `No route from ${ segmentStart.name } to ${ segmentEnd.name } available` );
+        }
+      }
       this._graphs = newGraphs;
-      //if ( newGraphs.length > 0 ) {
-      //  console.log( `Synced and built ${ newGraphs.length } graphs` );
-      //}
     }
-    catch ( e )
-    {
+    catch ( e ) {
       this._error = e;
       if ( !( e instanceof RouteSegmentFailed ) ) {
-        console.error( `Error building route: ${ e.message }` );
+        // console.error( `Error building route: ${ e.message }`, e);
       }
     }
   }
@@ -286,125 +296,123 @@ class Route {
 
   currentRoute () {
     const route = [];
-
-    for ( let i = 0, graphsLength = this._graphs.length; i < graphsLength; i += 1 ) {
-      // TODO: Check whether this is correct or not, looks kaput
-      if ( this.waypoints[i] instanceof StarSystem ) {
-        this._graphs[i].rebuildGraph();
-        let routePart = this._graphs[i].routeArray( this.waypoints[i] );
-        for ( let j = 0; j < routePart.length; j += 1 ) {
-          route.push( routePart[j] );
+    if (this._graphs.length === 0) {
+        // If there's a start system but no waypoints (so no graphs), the route is just the start system.
+        if (this.start instanceof StarSystem) {
+            route.push({ system: this.start, distance: 0, previous: null }); // Mimic Dijkstra node
         }
-      }
+        return route;
     }
 
+    this._graphs.forEach((graph, index) => {
+        const segmentPath = graph.routeArray(); // routeArray() uses graph's own destination
+        if (segmentPath && segmentPath.length > 0) {
+            // Avoid duplicating connection points between segments
+            const startIndex = (index > 0 && route.length > 0 && route[route.length - 1].system === segmentPath[0].system) ? 1 : 0;
+            for (let j = startIndex; j < segmentPath.length; j++) {
+                route.push(segmentPath[j]);
+            }
+        }
+    });
     return route;
   }
 
-  // Returns a float 0.0 to 1.0 to indicate where we are in
-  // the route; we can use this to establish the approximate
-  // colour of the given point
-  alphaOfSystem ( system ) {
-    const currentStep = this.indexOfCurrentRoute( system );
+  // Returns a float 0.0 to 1.0 to indicate where 'system' is in 'routePath'
+  // 'routePath' is expected to be an array of Dijkstra-like nodes { system, ... }
+  alphaOfSystem ( system, routePath ) {
+    if (!routePath || routePath.length === 0) return 0;
+    const currentStep = this.indexOfSystemInRoute( system, routePath );
 
-    if ( currentStep ) {
-      return ( currentStep / this.currentRoute().length );
+    if ( currentStep > -1 && routePath.length > 1 ) {
+      return ( currentStep / ( routePath.length - 1 ) ); // Normalize from 0 to 1
     }
-
     return 0;
   }
 
-  indexOfCurrentRoute ( system ) {
-    if ( ! system instanceof StarSystem ) {
-      return;
+  // Finds index of 'system' in 'routePath' (array of Dijkstra-like nodes)
+  indexOfSystemInRoute ( system, routePath ) {
+    if ( !(system instanceof StarSystem) || !Array.isArray(routePath) ) {
+      return -1;
     }
-
-    let currentStep = 0;
-
-    this.currentRoute().forEach( ( waypoint, index ) => {
-      if ( waypoint.system === system ) {
-        currentStep = index;
+    for (let i = 0; i < routePath.length; i++) {
+      if (routePath[i].system === system) {
+        return i;
       }
-    });
-
-    return currentStep;
+    }
+    return -1;
   }
 
   rebuildCurrentRoute () {
-    this.removeFromScene();
+    // this.removeFromScene(); // Removed - UI concern
     this._graphs.forEach( graph => {
-      if ( graph.rebuildGraph() ) {
-        let destination = graph.destination();
-        if ( destination ) {
-          //console.log( `Have existing destination, updating route` );
-          this.update( destination );
-        }
-      }
+      graph.rebuildGraph(); // This internally calls buildGraph(..., true)
     });
+    this.update(); // Ensures graphs are synced and consistent after individual rebuilds
   }
 
   destroy () {
     this.start = null;
     this.waypoints = [];
-    this.update();
+    this.__syncGraphs(); // This will clear _graphs as allStops will be < 2
+    this.storeToSession(); // Update session storage to reflect cleared route
   }
 
-  removeFromScene () {
-    if ( this._routeObject ) {
-      scene.remove( this._routeObject );
-    }
-  }
+  // Removed removeFromScene method
 
   update () {
-    const before = this.toString();
-
+    // const before = this.toString(); // For debugging
     this.__syncGraphs();
-    this.removeFromScene();
-
-    const entireRoute = this.currentRoute();
-
-    if ( entireRoute.length )
-    {
-      // Exception can be thrown and caught to signal the route isn't possible
-      if ( this.lastError() ) {
-        return;
-      }
-
-      // Build all the parts of the route together in a single geometry group
-      const routeObject = new JumpRouteGeometry({
-        map: map,
-        route: this,
-        initialScale: map.displayState.currentScale,
-      });
-      this._routeObject = routeObject.mesh;
-      scene.add( routeObject.mesh );
-    }
-
-    RouteUI.update( this );
+    // UI update logic (like RouteUI.update(this)) is removed.
+    // The state of the route is now self-contained.
+    // Consumers of this class would typically call currentRoute() after an update.
+    // if (this.lastError()) {
+    //   console.warn("Route update resulted in an error:", this.lastError());
+    // }
   }
 
   storeToSession () {
-    if ( hasSessionStorage ) {
-      if ( this.start && ( this.waypoints.length ) ) {
-        window.sessionStorage.currentRoute = JSON.stringify({
-          start: this.start.id,
-          waypoints: this.waypoints.map( waypoint => {
-            return waypoint.id;
-          })
-        });
-      } else {
+    if ( !hasSessionStorage() ) return;
+
+    const routeData = { start: null, waypoints: [] };
+    if (this.start instanceof StarSystem) {
+        routeData.start = this.start.id;
+    }
+    routeData.waypoints = this.waypoints
+        .filter(wp => wp instanceof StarSystem) // Ensure only valid systems are stored
+        .map(waypoint => waypoint.id);
+
+    if (routeData.start || routeData.waypoints.length > 0) {
+        window.sessionStorage.currentRoute = JSON.stringify(routeData);
+    } else {
         delete window.sessionStorage.currentRoute;
-      }
     }
   }
 
-  restoreFromSession () {
-    if ( hasSessionStorage && ( 'currentRoute' in window.sessionStorage ) ) {
+  restoreFromSession ( scmapInstance ) {
+    if ( !hasSessionStorage() || !( 'currentRoute' in window.sessionStorage ) ) {
+      return;
+    }
+    if (!scmapInstance) {
+        console.error("SCMAP instance not provided to restoreFromSession.");
+        return;
+    }
+    
+    this.scmapInstance = scmapInstance; // Ensure scmapInstance is set for getById calls
+
+    try {
       const data = JSON.parse( window.sessionStorage.currentRoute );
-      this.start = StarSystem.getById( data.start );
-      this.waypoints = data.waypoints.map( waypoint => {
-        return StarSystem.getById( waypoint );
-      });
+      this.start = data.start ? StarSystem.getById( data.start, this.scmapInstance ) : null;
+      this.waypoints = data.waypoints
+        .map( waypointId => StarSystem.getById( waypointId, this.scmapInstance ) )
+        .filter(system => system instanceof StarSystem); // Ensure all are valid StarSystem instances
+
+      this.__syncGraphs(); // Rebuild graphs based on restored data
+    } catch (e) {
+      console.error("Error restoring route from session storage:", e);
+      delete window.sessionStorage.currentRoute; // Clear corrupted data
+      this.start = null;
+      this.waypoints = [];
+      this.__syncGraphs(); // Ensure graphs are cleared
     }
   }
 }

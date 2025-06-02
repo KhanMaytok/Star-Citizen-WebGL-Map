@@ -4,17 +4,35 @@
 
 import { travelTimeForAU } from '../helpers/functions';
 import StarSystem from './star-system';
-import settings from './settings';
+// import settings from './settings'; // Will be replaced by routingSettings
 
 class Dijkstra {
-  constructor( systems, start, end ) {
+  constructor( systems, startSystem, endSystem, routingSettings, scmapInstance, mapConfig ) {
     if ( ! ( typeof systems === 'object' && Array.isArray( systems ) ) ) {
-      console.error( `No array specified to Dijkstra constructor!` );
+      console.error( `No systems array specified to Dijkstra constructor!` );
+      return;
+    }
+    if ( ! ( startSystem instanceof StarSystem ) ) {
+      console.error( `No valid startSystem specified to Dijkstra constructor!` );
+      return;
+    }
+    if ( ! ( endSystem instanceof StarSystem ) ) {
+      console.error( `No valid endSystem specified to Dijkstra constructor!` );
       return;
     }
 
-    this.start = ( start instanceof StarSystem ) ? start : null;
-    this.end = ( this.start && end instanceof StarSystem ) ? end : null;
+    this.start = startSystem;
+    this.end = endSystem;
+    this.routingSettings = routingSettings || {};
+    this.scmapInstance = scmapInstance; // May be needed for more complex checks later
+    this.mapConfig = mapConfig || {};
+
+    // Default routing settings if not provided
+    this.routingSettings.avoidUnknownJumppoints = this.routingSettings.avoidUnknownJumppoints !== undefined ? this.routingSettings.avoidUnknownJumppoints : true;
+    this.routingSettings.avoidHostile = this.routingSettings.avoidHostile !== undefined ? this.routingSettings.avoidHostile : true;
+    this.routingSettings.avoidOffLimits = this.routingSettings.avoidOffLimits !== undefined ? this.routingSettings.avoidOffLimits : true;
+    this.routingSettings.usersFaction = this.routingSettings.usersFaction || null; // Expects a Faction object or null
+    this.routingSettings.systemsToAvoid = this.routingSettings.systemsToAvoid || []; // Expects array of system IDs
 
     // First build a list of all nodes in the graph and
     // map them by system.id so they can be found quickly
@@ -34,19 +52,17 @@ class Dijkstra {
     this._result = {};
   }
 
-  buildGraph ( priority, forceUpdate ) {
+  buildGraph ( priority = 'time', forceUpdate = false ) {
     let nodes, i, distance, system, currentNode, jumpPoint,
         otherNode, endTime, startTime = new Date();
-    let distAU;
+    // let distAU; // Not used
 
-    if ( ! ( this.start instanceof StarSystem ) ) { throw new Error( `No source given` ); }
-    if ( ! ( this.end instanceof StarSystem )   ) { throw new Error( `No or invalid destination given` ); }
+    if ( ! ( this.start instanceof StarSystem ) ) { throw new Error( `Dijkstra: No source system given` ); }
+    if ( ! ( this.end instanceof StarSystem )   ) { throw new Error( `Dijkstra: No or invalid destination system given` ); }
 
     this._result.destination = this.end;
     // TODO: expiry, map may have changed
-    if ( ! forceUpdate && this._result.source instanceof StarSystem && this._result.source === this.start && this._result.priority === priority ) {
-      //console.log( 'Reusing generated graph starting at', this._result.source.name );
-      /////this._result.destination = this.end;
+    if ( !forceUpdate && this._result.source instanceof StarSystem && this._result.source === this.start && this._result.priority === priority ) {
       return;
     }
 
@@ -55,101 +71,89 @@ class Dijkstra {
     this._result.destination = this.end;
     this._result.priority = priority;
 
-    // Created using http://en.wikipedia.org/wiki/Dijkstra%27s_algorithm#Pseudocode
-
     for ( i = 0; i < this._nodes.length; i++ ) {
       this._nodes[ i ].distance = Number.POSITIVE_INFINITY;
       this._nodes[ i ].previous = null;
     }
 
     currentNode = this._mapping[ this.start.id ];
-    currentNode.distance = 0; // distance from source to source
+    currentNode.distance = 0;
     currentNode.previous = null;
 
     nodes = Dijkstra.quickSort( this._nodes );
 
-    while ( nodes.length )
-    {
+    while ( nodes.length ) {
       currentNode = nodes[0];
 
-      // "If we are only interested in a shortest path between vertices source and
-      //  target, we can terminate the search at line 13 if u = target."
       if ( currentNode.system === this.end ) {
         break;
       }
 
-      // Remove currentNode (the first node) from set
       nodes.splice( 0, 1 );
 
-      // Don't bother with th current node if it's not reachable
       if ( Dijkstra.isInfinite( currentNode.distance ) ) {
         break;
       }
 
-      //console.log( `Working on node ${ currentNode.system.name }, ${ currentNode.system.jumpPoints.length } jumppoints to test` );
-
-      for ( i = 0; i < currentNode.system.jumpPoints.length; i++ )
-      {
+      for ( i = 0; i < currentNode.system.jumpPoints.length; i++ ) {
         jumpPoint = currentNode.system.jumpPoints[i];
         otherNode = this._mapping[ jumpPoint.destination.id ];
 
-        // Don't take "unknown" and "undiscovered" jump points
-        if ( jumpPoint.isUnconfirmed() && settings.route.avoidUnknownJumppoints ) {
+        if ( jumpPoint.isUnconfirmed() && this.routingSettings.avoidUnknownJumppoints ) {
           continue;
         }
 
-        // These checks are only done if they're not an explicit part of the route we're building
-        // (which is essentially the user overriding the route)
-        if ( !this.isStartOrEnd( otherNode.system ) )
-        {
-          // Don't go into "hostile" nodes, unless we already are in one
-          if ( settings.route.avoidHostile &&
-            ! currentNode.system.faction.isHostileTo( settings.usersFaction ) &&
-            otherNode.system.faction.isHostileTo( settings.usersFaction )
+        if ( !this.isStartOrEnd( otherNode.system ) ) {
+          if ( this.routingSettings.avoidHostile &&
+               this.routingSettings.usersFaction && // Ensure usersFaction is set
+               currentNode.system.faction && // Ensure current system has a faction
+               !currentNode.system.faction.isHostileTo( this.routingSettings.usersFaction ) &&
+               otherNode.system.faction && // Ensure other system has a faction
+               otherNode.system.faction.isHostileTo( this.routingSettings.usersFaction ) ) {
+            continue;
+          }
+
+          if ( this.routingSettings.avoidOffLimits && otherNode.system.isOffLimits ) {
+            continue;
+          }
+
+          // Check against systemsToAvoid list (using system IDs)
+          if ( this.routingSettings.systemsToAvoid.includes(otherNode.system.id) &&
+              (!currentNode.system || !this.routingSettings.systemsToAvoid.includes(currentNode.system.id)) // only if current is not also avoided
           ) {
             continue;
           }
-
-          // Don't go into "off limits" nodes
-          if ( settings.route.avoidOffLimits && otherNode.system.isOffLimits ) {
-            continue;
-          }
-
-          // Don't go into "avoid" nodes, unless we already are in one
-          if ( !currentNode.system.isToBeAvoided() && otherNode.system.isToBeAvoided() ) {
-            continue;
-          }
         }
 
-        // cost = half time to JP + JP time + half time from JP
-        // TODO: at start and end this can be from start and to dest rather than half
         distance = currentNode.distance + jumpPoint.jumpTime();
 
-        if ( currentNode.previous === null ) {
-          distance += travelTimeForAU( 0.35 ); // FIXME
-        }
-        else
-        {
-          distance += travelTimeForAU( 0.7 );
+        const travelTimePerAU = this.mapConfig.approximateTraveltimePerAU || ( ( 8 * 60 ) + 19 ) * 5; // Fallback if not in config
+
+        if ( currentNode.previous === null ) { // Start of route from source system
+          distance += travelTimeForAU( 0.35, travelTimePerAU ); // FIXME: Magic number 0.35 AU
+        } else { // Mid-route, from one jump point to another via a system
+          distance += travelTimeForAU( 0.7, travelTimePerAU ); // FIXME: Magic number 0.7 AU
         }
 
-        // Get out of "never" nodes asap by increasing the cost massively
-        if ( settings.route.avoidHostile && otherNode.system.faction.isHostileTo( settings.usersFaction ) ) {
-          distance *= 15;
+        if ( this.routingSettings.avoidHostile &&
+             this.routingSettings.usersFaction &&
+             otherNode.system.faction &&
+             otherNode.system.faction.isHostileTo( this.routingSettings.usersFaction ) ) {
+          distance *= 15; // Penalty for hostile systems
         }
 
         if ( distance < otherNode.distance ) {
           otherNode.distance = distance;
           otherNode.previous = currentNode;
-          nodes = Dijkstra.quickSort( nodes );
+          nodes = Dijkstra.quickSort( nodes ); // Re-sort nodes based on new distances
         }
       }
     }
 
-    this._result.nodes = nodes;
+    this._result.nodes = nodes; // Remaining nodes (should be empty if target found and optimal)
     this._result.priority = priority;
     endTime = new Date();
-    //console.log( 'Graph building took ' + (endTime.getTime() - startTime.getTime()) + ' msec' );
+    // console.log( `Graph building for ${this.start.name} to ${this.end.name} took ` + (endTime.getTime() - startTime.getTime()) + ' msec' );
   }
 
   isStartOrEnd ( system ) {

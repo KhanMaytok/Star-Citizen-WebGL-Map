@@ -2,329 +2,244 @@
 * @author Lianna Eeftinck / https://github.com/Leeft
 */
 
-import SCMAP from '../scmap';
-import Faction from './faction';
+// import SCMAP from '../scmap'; // Will be passed via scmapInstance
+import Faction from './faction'; // Assuming Faction is a data class now
 import JumpPoint from './jump-point';
-import MapSymbols from './ui/symbols';
-import config from './config';
-import settings from './settings';
-import { map } from '../starcitizen-webgl-map';
-import { Color, Vector3 } from './three';
-import { generateUUID } from './three/math';
+// import MapSymbols from './ui/symbols'; // UI concern
+// import config from './config'; // Will be passed in
+// import settings from './settings'; // State to be managed externally
+// import { map } from '../starcitizen-webgl-map'; // UI/Three.js concern
+// import { Color, Vector3 } from './three'; // Using plain objects/strings
+// import { generateUUID } from './three/math'; // Using provided uuid or id
 
-const UNSET = new Color( 0x80A0CC );
+const UNSET_COLOR_STRING = '#80a0cc';
 
 class StarSystem {
-  constructor ( data ) {
-    this.id = undefined;
-    this.uuid = undefined;
-    this.name = generateUUID();
-    this.description = '';
-    this.nickname = '';
-    this.position = new Vector3();
-    this.faction = new Faction();
-    this.size = 'medium';
-    this.jumpPoints = [];
-    this.poi = [];
-    this.color = new Color( 0xFFFFFF );
-    this.planets = 0;
-    this.planetaryRotation = [];
-    this.import = [];
-    this.export = [];
-    this.status = 'Unknown';
-    this.crimeStatus = '';
-    this.blackMarket = [];
-    this.ueeStrategicValue = undefined;
-    this.info = [];
-    this.binary = false;
-    this.isOffLimits = false;
-    this.hasWarning = false;
-    this.isMajorTradeHub = false;
+  constructor ( initialData = {}, scmapInstance, config ) {
+    this.scmapInstance = scmapInstance;
+    this.config = config;
 
-    this.setValues( data );
+    this.id = initialData.id || undefined;
+    this.uuid = initialData.uuid || (initialData.name ? initialData.name.replace(/\s+/g, '-').toLowerCase() : undefined); // Basic UUID from name if not given
+    this.name = initialData.name || 'Unknown System';
+    this.description = initialData.description || '';
+    this.nickname = initialData.nickname || '';
+    this.position = initialData.position ? { ...initialData.position } : { x: 0, y: 0, z: 0 }; // Expects {x,y,z}
+    this.faction = initialData.faction || null; // Expects Faction instance or ID to be resolved
+    this.size = initialData.size || 'medium';
+    this.jumpPoints = []; // Will be populated by _fixJumpPoints or fromJSON
+    this.poi = initialData.poi || [];
+    this.color = initialData.color || '#FFFFFF'; // Expects hex string
+    this.planets = initialData.planets || 0;
+    this.planetaryRotation = initialData.planetaryRotation || [];
+    this.import = initialData.import || [];
+    this.export = initialData.export || [];
+    this.status = initialData.status || 'Unknown';
+    this.crimeStatus = initialData.crimeStatus || ''; // Expects resolved string or ID
+    this.blackMarket = initialData.blackMarket || [];
+    this.ueeStrategicValue = initialData.ueeStrategicValue || undefined; // Expects resolved string or ID
+    this.info = initialData.info || [];
+    this.binary = initialData.binary || false;
+    this.isOffLimits = initialData.isOffLimits || false;
+    this.hasWarning = initialData.hasWarning || false;
+    this.isMajorTradeHub = initialData.isMajorTradeHub || false;
+
+    // If jumpPoints data was passed in initialData, process it.
+    // This is a bit redundant with fromJSON but makes constructor more robust.
+    if (initialData.jumpPoints && initialData.jumpPoints.length > 0 && this.scmapInstance) {
+      this._fixJumpPoints(initialData.jumpPoints, true, this.scmapInstance, this.config);
+    }
   }
 
   get scale () {
-    let scale = 1.0;
+    let scaleFactor = 1.0;
     switch ( this.size ) {
-      case 'dwarf':  scale = 0.90; break;
-      case 'medium': scale = 1.0;  break;
-      case 'large':  scale = 1.15; break;
-      case 'giant':  scale = 1.27; break;
-      case 'binary': scale = 1.4;  this.binary = true; break;
+      case 'dwarf':  scaleFactor = 0.90; break;
+      case 'medium': scaleFactor = 1.0;  break;
+      case 'large':  scaleFactor = 1.15; break;
+      case 'giant':  scaleFactor = 1.27; break;
+      case 'binary': scaleFactor = 1.4;  this.binary = true; break; // Note: direct mutation in getter
     }
-    return scale;
+    return scaleFactor;
   }
 
-  getIcons () {
-    const myIcons = [];
+  // Removed getIcons, refreshIcons, labelScale, refreshScale (UI concerns)
 
-    //if ( true && ( this.name === 'Sol' || /^Unknown/.test( this.name ) ) ) {
-    //  myIcons.push( MapSymbols.DANGER );
-    //  myIcons.push( MapSymbols.WARNING );
-    //  myIcons.push( MapSymbols.HANGAR );
-    //  myIcons.push( MapSymbols.INFO );
-    //  myIcons.push( MapSymbols.TRADE );
-    //  myIcons.push( MapSymbols.BANNED );
-    //  myIcons.push( MapSymbols.AVOID );
-    //  myIcons.push( MapSymbols.COMMENTS );
-    //  myIcons.push( MapSymbols.BOOKMARK );
-    //  return myIcons;
-    //}
-
-    if ( this.faction.isHostileTo( settings.usersFaction ) ) { myIcons.push( MapSymbols.DANGER ); }
-    if ( this.hasWarning )      { myIcons.push( MapSymbols.WARNING ); }
-    if ( this.info.length )     { myIcons.push( MapSymbols.INFO ); }
-    if ( this.isMajorTradeHub ) { myIcons.push( MapSymbols.TRADE ); }
-    if ( this.isOffLimits )     { myIcons.push( MapSymbols.BANNED ); }
-    if ( this.hasHangar() )     { myIcons.push( MapSymbols.HANGAR ); }
-    if ( this.isBookmarked() )  { myIcons.push( MapSymbols.BOOKMARK ); }
-    if ( this.isToBeAvoided() ) { myIcons.push( MapSymbols.AVOID ); }
-    if ( this.hasComments() )   { myIcons.push( MapSymbols.COMMENTS ); }
-
-    return myIcons;
-  }
-
-  refreshIcons () {
-    this.label.icons = ( settings.labelIcons ) ? this.getIcons() : [];
-    this.label.redraw();
-    this.refreshScale( this.labelScale );
-  }
-
-  get labelScale () {
-    return ( settings.labelScale * config.labelScale * ( ( this.isUnknown() ) ? 0.5 : 1 ) );
-  }
-
-  // TODO: Move this helper to label class
-  refreshScale ( scale ) {
-    this.label.sprite.scale.set( scale * ( this.label.node.width / this.label.node.height ), scale, 1 );
-  }
-
-  // Returns the jumppoint leading to the given destination
-  jumpPointTo ( destination ) {
+  // Returns the jumppoint leading to the given destination StarSystem instance
+  jumpPointTo ( destinationSystem ) {
     for ( let i = 0; i < this.jumpPoints.length; i++ ) {
-      if ( this.jumpPoints[i].destination === destination ) {
+      if ( this.jumpPoints[i].destination === destinationSystem ) {
         return this.jumpPoints[i];
       }
     }
-  }
-
-  isBookmarked ( ) {
-    return this.storedSettings().bookmarked === true;
+    return undefined;
   }
 
   isUnknown () {
-    return ( this.status === 'Unknown' ) ? true : false;
+    return ( this.status === 'Unknown' );
   }
 
-  setBookmarkedState ( state ) {
-    this.storedSettings().bookmarked = ( state ) ? true : false;
-    this.saveSettings();
-    return this;
-  }
-
-  hasHangar () {
-    return this.storedSettings().hangarLocation === true;
-  }
-
-  setHangarState ( state ) {
-    this.storedSettings().hangarLocation = ( state ) ? true : false;
-    this.saveSettings();
-    return this;
-  }
-
-  isToBeAvoided () {
-    return this.storedSettings().avoid === true;
-  }
-
-  setToBeAvoidedState ( state ) {
-    this.storedSettings().avoid = ( state ) ? true : false;
-    this.saveSettings();
-    return this;
-  }
-
-  hasComments () {
-    return( ( typeof this.storedSettings().comments === 'string' ) && ( this.storedSettings().comments.length > 0 ) );
-  }
-
-  getComments () {
-    return this.storedSettings().comments;
-  }
-
-  setComments ( comments ) {
-    if ( ( typeof comments === 'string' ) && ( comments.length > 1 ) ) {
-      this.storedSettings().comments = comments;
-    } else {
-      delete this.storedSettings().comments;
-    }
-    this.saveSettings();
-    return this;
-  }
-
-  storedSettings () {
-    if ( !( this.id in settings.systems ) ) {
-      settings.systems[ this.id ] = {};
-    }
-    return settings.systems[ this.id ];
-  }
-
-  saveSettings () {
-    settings.save('systems');
-    return this;
-  }
+  // Removed isBookmarked, setBookmarkedState, hasHangar, setHangarState,
+  // isToBeAvoided, setToBeAvoidedState, hasComments, getComments, setComments,
+  // storedSettings, saveSettings (state to be managed externally)
 
   toString () {
     return this.name;
   }
 
   getValue ( key ) {
-    if ( key === undefined ) {
-      return;
+    if ( key === undefined || !this.hasOwnProperty(key) ) {
+      return undefined;
     }
-    let value = this[ key ];
-    return value;
+    return this[key];
   }
 
-  factionStyle () {
-    return this.faction.color.getStyle();
-  }
+  // Removed factionStyle (UI concern)
 
-  _fixJumpPoints( cleanup ) {
-    let i, jumpPoint, destination, jumpPoints = [];
+  // Populates this.jumpPoints from raw jump point data
+  // rawJumpPointsData is expected to be an array from the JSON
+  _fixJumpPoints( rawJumpPointsData, cleanup = true, scmapInstance, config ) {
+    if (!scmapInstance) {
+      console.warn(`_fixJumpPoints called on ${this.name} without scmapInstance.`);
+      return this;
+    }
 
-    for ( i = 0; i < this.jumpPoints.length; i++ )
-    {
-      jumpPoint = this.jumpPoints[ i ];
+    let processedJumpPoints = [];
 
-      if ( jumpPoint instanceof JumpPoint ) {
+    for ( let i = 0; i < rawJumpPointsData.length; i++ ) {
+      const jpData = rawJumpPointsData[i];
+
+      // If already processed and stored in this.jumpPoints, skip if not cleaning
+      if (!cleanup && this.jumpPoints.find(jp => jp.id === jpData.jumpPointId && jp instanceof JumpPoint)) {
+        processedJumpPoints.push(this.jumpPoints.find(jp => jp.id === jpData.jumpPointId));
         continue;
       }
 
-      destination = StarSystem.getById( jumpPoint.destinationSystemId );
-      if ( destination === this ) {
-        destination = StarSystem.getById( jumpPoint.sourceSystemId );
+      let destinationSystem = StarSystem.getById(jpData.destinationSystemId, scmapInstance);
+      // If destination is self, it means this system is the destination of an inbound JP.
+      // We need the source system for the JP object.
+      if (destinationSystem === this) {
+        destinationSystem = StarSystem.getById(jpData.sourceSystemId, scmapInstance);
       }
 
-      if ( destination instanceof StarSystem ) {
-        jumpPoint = new JumpPoint({
-          id: jumpPoint.jumpPointId,
-          direction: jumpPoint.direction,
-          source: this,
-          destination: destination,
-          name: jumpPoint.name,
-          size: jumpPoint.size,
-          status: jumpPoint.status,
-          type: jumpPoint.type,
-          entryAU: jumpPoint.coordsAu,
-        });
-
-        if ( cleanup ) {
-          jumpPoints.push( jumpPoint );
-        } else {
-          system.jumpPoints[ i ] = jumpPoint;
-        }
+      if (destinationSystem instanceof StarSystem) {
+        const jumpPoint = new JumpPoint({
+          id: jpData.jumpPointId,
+          direction: jpData.direction,
+          source: this, // The current StarSystem instance
+          destination: destinationSystem,
+          name: jpData.name,
+          size: jpData.size,
+          status: jpData.status,
+          type: jpData.type,
+          entryAU: jpData.coordsAu,
+        }, scmapInstance, config); // Pass scmapInstance & config to JumpPoint constructor
+        processedJumpPoints.push(jumpPoint);
+      } else {
+        console.warn(`Could not find destination system for jump point ${jpData.jumpPointId} from ${this.name}`);
       }
     }
 
-    if ( cleanup ) {
-      this.jumpPoints = jumpPoints;
-    }
-
+    this.jumpPoints = processedJumpPoints;
     return this;
   }
 
+  // Simplified setValues, mainly for direct properties. Complex relations handled in fromJSON or specific methods.
   setValues ( values ) {
-    let key, currentValue, newValue, jumpPoint;
+    let key, newValue;
 
-    if ( values === undefined ) {
+    if (values === undefined) {
       return;
     }
 
-    for ( key in values ) {
-      newValue = values[ key ];
-      if ( newValue === undefined ) {
-        console.log( `StarSystem: "${ key }" parameter is undefined for "${ this.name }"` );
+    for (key in values) {
+      if (!values.hasOwnProperty(key)) continue;
+
+      newValue = values[key];
+      if (newValue === undefined) {
+        // console.log(`StarSystem: "${key}" parameter is undefined for "${this.name}"`);
         continue;
       }
 
-      if ( key in this )
-      {
-        currentValue = this[ key ];
-
-        if ( currentValue instanceof Color ) {
-
-          if ( newValue instanceof Color ) {
-            this[ key ] = newValue;
-          } else {
-            newValue = newValue.replace( '0x', '#' ).toLowerCase();
-            this[ '_' + key ] = newValue;
-            if ( /unknown/i.test( newValue ) ) {
-              this[ key ] = UNSET;
-            } else {
-              this[ key ] = new Color( newValue );
-            }
+      if (this.hasOwnProperty(key) || key === 'position' || key === 'color' || key === 'faction') {
+        if (key === 'position') {
+          if (newValue instanceof Array && newValue.length === 3) {
+            this.position = { x: newValue[0], y: newValue[1], z: newValue[2] };
+          } else if (typeof newValue === 'object' && newValue !== null && 'x' in newValue && 'y' in newValue && 'z' in newValue) {
+            this.position = { ...newValue };
           }
-
-        } else if ( currentValue instanceof Faction ) {
-
-          this[ key ] = newValue.claim( this );
-
-        } else if ( currentValue instanceof Vector3 && newValue instanceof Vector3 ) {
-
-          currentValue.copy( newValue );
-
-        } else if ( currentValue instanceof Vector3 ) {
-
-          if ( newValue instanceof Vector3 ) {
-            currentValue.copy( newValue );
-          } else if ( newValue instanceof Array ) {
-            currentValue.fromArray( newValue );
+        } else if (key === 'color') {
+          this.color = typeof newValue === 'string' ? newValue.toLowerCase() : UNSET_COLOR_STRING;
+        } else if (key === 'faction') {
+          // Assuming newValue is either a Faction instance or an ID
+          if (this.scmapInstance && !(newValue instanceof Faction)) {
+            this.faction = this.scmapInstance.getFactionById(newValue);
+            if (this.faction) this.faction.claim(this); // If faction resolved, claim system
+          } else if (newValue instanceof Faction) {
+            this.faction = newValue;
+            this.faction.claim(this);
           }
-
         } else {
-
-          this[ key ] = newValue;
-
+          this[key] = newValue;
         }
       }
     }
   }
 
-  static fromJSON ( json ) {
-    let system;
-
-    if ( json instanceof StarSystem ) {
+  static fromJSON ( json, scmapInstance, config ) {
+    if (json instanceof StarSystem) {
       return json;
     }
 
-    return new StarSystem({
-      'id': json.id,
-      'uuid': json.uuid,
-      'name': json.name,
-      'description': json.description,
-      'position': json.coordinates,
-      'color': ( json.color === 'Unknown' ) ? UNSET : new Color( json.color.toLowerCase() ),
-      'faction': SCMAP.getFactionById( json.faction ),
-      'isMajorTradeHub': json.isMajorTradeHub,
-      'hasWarning': json.hasWarning,
-      'isOffLimits': json.isOffLimits,
-      'nickname': json.nickname,
-      'size': json.size,
-      'info': json.info,
-      'status': json.status,
-      'crimeStatus': SCMAP.getCrimeLevelById( json.crimeLevel ),
-      'ueeStrategicValue': SCMAP.getUEEStrategicValueById( '' + json.ueeStrategicValue ),
-      'import': json.importing,
-      'export': json.exporting,
-      'blackMarket': json.blackMarkets,
-      'planets': [], // TODO
-      'planetaryRotation': [], // TODO
-      'jumpPoints': json.jumpPoints,
-    });
+    const systemData = {
+      id: json.id,
+      uuid: json.uuid,
+      name: json.name,
+      description: json.description,
+      position: Array.isArray(json.coordinates) ? { x: json.coordinates[0], y: json.coordinates[1], z: json.coordinates[2] } : json.coordinates,
+      color: (json.color === 'Unknown' || !json.color) ? UNSET_COLOR_STRING : String(json.color).toLowerCase().replace('0x','#'),
+      isMajorTradeHub: json.isMajorTradeHub,
+      hasWarning: json.hasWarning,
+      isOffLimits: json.isOffLimits,
+      nickname: json.nickname,
+      size: json.size,
+      info: json.info,
+      status: json.status,
+      import: json.importing,
+      export: json.exporting,
+      blackMarket: json.blackMarkets,
+      // planets, planetaryRotation would be set here if data available
+      // jumpPoints are handled separately for clarity and dependency resolution
+    };
+
+    const system = new StarSystem(systemData, scmapInstance, config);
+
+    // Resolve faction, crimeStatus, ueeStrategicValue using scmapInstance
+    if (scmapInstance) {
+      system.faction = scmapInstance.getFactionById(json.faction);
+      if (system.faction && system.faction.claim) { // Ensure faction object has claim method
+          system.faction.claim(system);
+      }
+      system.crimeStatus = scmapInstance.getCrimeLevelById(json.crimeLevel);
+      system.ueeStrategicValue = scmapInstance.getUEEStrategicValueById(String(json.ueeStrategicValue));
+    } else {
+      console.warn(`scmapInstance not provided to StarSystem.fromJSON for ${json.name}, some data may not be resolved.`);
+    }
+    
+    // Process jump points after system instance is created and basic properties are set
+    if (json.jumpPoints && json.jumpPoints.length > 0 && scmapInstance) {
+      system._fixJumpPoints(json.jumpPoints, true, scmapInstance, config);
+    }
+
+    return system;
   }
 
-  static getById ( id ) {
-    return SCMAP.getStarSystemById( id );
+  static getById ( id, scmapInstance ) {
+    if (!scmapInstance) {
+      console.error("StarSystem.getById requires scmapInstance");
+      return undefined;
+    }
+    return scmapInstance.getStarSystemById( id );
   }
 }
 

@@ -2,9 +2,10 @@
 * @author Lianna Eeftinck / https://github.com/Leeft
 */
 
-// These are deliberately strings: code using these numbers must be able
-// to cope with strings as they may come from HTML data attributes.
-const DEFAULTS = {
+// These are deliberately strings where they might have been numbers,
+// to reflect that in the original code they could come from HTML data attributes.
+// Code using these values should be prepared to parse them if numbers are required.
+const defaultMapConfig = {
   systemsJson:          'data/systems.min.json',
   goodsJson:            'data/goods.json',
   crimeLevelsJson:      'data/crime-levels.json',
@@ -38,19 +39,8 @@ const DEFAULTS = {
   renderScale:          0.5, // to grow or shrink
 
   // takes 8m 19s at 1c, but autopilot speed is only 0.2c
-  // FIXME: this value is probably going to be WAY, WAY off.
+  // Value is in seconds.
   approximateTraveltimePerAU: ( ( 8 * 60 ) + 19 ) * 5,
 };
 
-class Config {
-  constructor () {
-    const element = document.getElementById('sc-map-configuration');
-    if ( element && ( typeof element.dataset === 'object' ) ) {
-      Object.assign( this, DEFAULTS, element.dataset );
-    } else {
-      Object.assign( this, DEFAULTS );
-    }
-  }
-}
-
-export default new Config();
+export default defaultMapConfig;
